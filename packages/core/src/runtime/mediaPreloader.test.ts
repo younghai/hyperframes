@@ -268,4 +268,58 @@ describe("createMediaPreloadManager", () => {
     const loadCallsAfter = (elements[0].load as ReturnType<typeof vi.fn>).mock.calls.length;
     expect(loadCallsAfter).toBeGreaterThan(loadCallsBefore);
   });
+
+  it("isLazy reports true with 6+ clips so caller can gate render-mode bypass", () => {
+    elements = Array.from({ length: 6 }, (_, i) =>
+      mockMediaElement({ start: String(i * 5), duration: "5" }),
+    );
+    setupDOM(elements);
+
+    const manager = createMediaPreloadManager();
+    manager.refresh();
+    expect(manager.isLazy()).toBe(true);
+  });
+
+  it("calls onActivation when lazy mode activates", () => {
+    elements = Array.from({ length: 8 }, (_, i) =>
+      mockMediaElement({ start: String(i * 5), duration: "5" }),
+    );
+    setupDOM(elements);
+
+    const onActivation = vi.fn();
+    const manager = createMediaPreloadManager({ onActivation });
+    manager.refresh();
+
+    expect(onActivation).toHaveBeenCalledOnce();
+    expect(onActivation).toHaveBeenCalledWith(8);
+  });
+
+  it("does not call onActivation below threshold", () => {
+    elements = [
+      mockMediaElement({ start: "0", duration: "5" }),
+      mockMediaElement({ start: "5", duration: "5" }),
+    ];
+    setupDOM(elements);
+
+    const onActivation = vi.fn();
+    const manager = createMediaPreloadManager({ onActivation });
+    manager.refresh();
+
+    expect(onActivation).not.toHaveBeenCalled();
+  });
+
+  it("calls onActivation only once across multiple refreshes", () => {
+    elements = Array.from({ length: 8 }, (_, i) =>
+      mockMediaElement({ start: String(i * 5), duration: "5" }),
+    );
+    setupDOM(elements);
+
+    const onActivation = vi.fn();
+    const manager = createMediaPreloadManager({ onActivation });
+    manager.refresh();
+    manager.refresh();
+    manager.refresh();
+
+    expect(onActivation).toHaveBeenCalledOnce();
+  });
 });

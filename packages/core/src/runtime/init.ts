@@ -1224,7 +1224,11 @@ export function initSandboxRuntimeModular(): void {
   };
 
   const isRenderMode = Boolean((window as Record<string, unknown>).__HF_EXPORT_RENDER_SEEK_CONFIG);
-  const mediaPreloader = createMediaPreloadManager();
+  const mediaPreloader = createMediaPreloadManager({
+    onActivation: (clipCount) => {
+      postRuntimeDiagnosticOnce("lazy_preload_activated", { clipCount }, "lazy_preload_activated");
+    },
+  });
 
   const bindMediaMetadataListeners = () => {
     if (state.tornDown) return;

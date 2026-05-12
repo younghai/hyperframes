@@ -1,8 +1,16 @@
 import { refreshRuntimeMediaCache, type RuntimeMediaClip } from "./media";
 
+// Compositions with fewer than 6 timed clips rarely exceed browser memory
+// limits during eager preload. The threshold avoids preload management
+// overhead for typical compositions while catching the heavy-media case
+// (e.g., 20 clips / 6GB reported in heygen-com/hyperframes#729).
 const LAZY_THRESHOLD = 6;
 const LOOKAHEAD_SECONDS = 10;
 const LOOKAHEAD_MIN_CLIPS = 2;
+// Cap on simultaneously promoted (buffered) clips. When the lookahead window
+// contains more clips than this (e.g., many short clips), all window clips
+// stay promoted — the cap is defense-in-depth, not a hard ceiling. The primary
+// memory bound comes from window-based eviction in syncWindow().
 const MAX_PROMOTED = 5;
 
 export interface MediaPreloadManager {
@@ -16,6 +24,7 @@ export function createMediaPreloadManager(options?: {
   resolveStartSeconds?: (element: Element) => number;
   resolveDurationSeconds?: (element: HTMLVideoElement | HTMLAudioElement) => number | null;
   shouldIncludeElement?: (element: HTMLVideoElement | HTMLAudioElement) => boolean;
+  onActivation?: (clipCount: number) => void;
 }): MediaPreloadManager {
   let clips: RuntimeMediaClip[] = [];
   const promoted = new Set<HTMLMediaElement>();
@@ -24,11 +33,16 @@ export function createMediaPreloadManager(options?: {
   /** Stashed original src so we can restore after eviction. */
   const originalSrc = new Map<HTMLMediaElement, string>();
   let lazy = false;
+  let activationEmitted = false;
 
   function refresh(): void {
     const cache = refreshRuntimeMediaCache(options);
     clips = cache.mediaClips;
     lazy = clips.length >= LAZY_THRESHOLD;
+    if (lazy && !activationEmitted) {
+      activationEmitted = true;
+      options?.onActivation?.(clips.length);
+    }
   }
 
   function evictClip(clip: RuntimeMediaClip): void {
