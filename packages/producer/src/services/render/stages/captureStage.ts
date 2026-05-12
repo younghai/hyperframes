@@ -70,6 +70,16 @@ export interface CaptureStageInput {
    */
   totalFrames: number;
   cfg: EngineConfig;
+  /**
+   * Capture-mode flag threaded from `compileStage`. The stage derives a
+   * local copy of `cfg` with this value applied to `forceScreenshot`
+   * before any engine call, so the caller-owned `cfg` is never mutated.
+   * The sequencer may override `compileResult.forceScreenshot` after a
+   * BeginFrame calibration timeout — passing the override through this
+   * parameter keeps the decision visible at the call site instead of
+   * hiding it inside a shared mutable config.
+   */
+  forceScreenshot: boolean;
   log: ProducerLogger;
   /** Initial worker count from `resolveRenderWorkerCount`; adaptive retry may reduce it. */
   workerCount: number;
@@ -103,6 +113,7 @@ export async function runCaptureStage(input: CaptureStageInput): Promise<Capture
     job,
     totalFrames,
     cfg,
+    forceScreenshot,
     log,
     captureAttempts,
     buildCaptureOptions,
@@ -114,6 +125,13 @@ export async function runCaptureStage(input: CaptureStageInput): Promise<Capture
   } = input;
   let { workerCount, probeSession } = input;
   let lastBrowserConsole: string[] = [];
+
+  // Derive a local cfg view rather than reading `forceScreenshot` from the
+  // caller-owned `cfg`. The sequencer threads the resolved value via the
+  // explicit parameter; this keeps the engine-facing config a pure
+  // pass-through.
+  const captureCfg: EngineConfig =
+    cfg.forceScreenshot === forceScreenshot ? cfg : { ...cfg, forceScreenshot };
 
   if (workerCount > 1) {
     // Parallel capture
@@ -146,7 +164,7 @@ export async function runCaptureStage(input: CaptureStageInput): Promise<Capture
           );
         }
       },
-      cfg,
+      cfg: captureCfg,
       log,
     });
     captureAttempts.push(...attempts);
@@ -170,7 +188,7 @@ export async function runCaptureStage(input: CaptureStageInput): Promise<Capture
         framesDir,
         buildCaptureOptions(),
         videoInjector,
-        cfg,
+        captureCfg,
       ));
     if (probeSession) {
       prepareCaptureSessionForReuse(session, framesDir, videoInjector);

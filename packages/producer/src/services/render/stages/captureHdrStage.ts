@@ -19,9 +19,13 @@
  *     paths so they don't run twice when the success path already closed.
  *   - `hdrVideoFrameSources` is drained + cleared in the outer `finally`
  *     regardless of how the body exits.
- *   - `cfg.forceScreenshot = true` is set unconditionally inside the
- *     layered path because `captureAlphaPng` hangs under
- *     `--enable-begin-frame-control`.
+ *   - The layered path unconditionally captures in screenshot mode
+ *     because `captureAlphaPng` hangs under `--enable-begin-frame-control`.
+ *     Previously the stage mutated `cfg.forceScreenshot = true` directly;
+ *     the value is now derived into a local `hdrCfg` so the caller-owned
+ *     `cfg` survives the stage unchanged. The sequencer is expected to
+ *     pass `forceScreenshot: true` for the layered branch as a contract
+ *     check.
  *
  * Known follow-up: same runtime import cycle pattern as the other
  * capture stages — the stage imports HDR helpers from
@@ -92,6 +96,14 @@ import { updateJobStatus, type CompositionMetadata } from "../shared.js";
 export interface CaptureHdrStageInput {
   job: RenderJob;
   cfg: EngineConfig;
+  /**
+   * Capture-mode flag threaded from `compileStage`. The HDR layered
+   * branch requires `true` (see file header for the
+   * `captureAlphaPng` / `--enable-begin-frame-control` constraint);
+   * the stage throws if called with `false`. Stored locally as
+   * `hdrCfg.forceScreenshot` so the caller-owned `cfg` is not mutated.
+   */
+  forceScreenshot: boolean;
   log: ProducerLogger;
 
   projectDir: string;
@@ -143,6 +155,7 @@ export async function runCaptureHdrStage(
   const {
     job,
     cfg,
+    forceScreenshot,
     log,
     projectDir,
     compiledDir,
@@ -171,6 +184,12 @@ export async function runCaptureHdrStage(
     onProgress,
   } = input;
 
+  if (!forceScreenshot) {
+    throw new Error(
+      "captureHdrStage requires forceScreenshot=true; the layered composite path uses captureAlphaPng which hangs under --enable-begin-frame-control.",
+    );
+  }
+
   const stageStart = Date.now();
   let lastBrowserConsole: string[] = [];
   let hdrPerf: HdrPerfCollector | undefined;
@@ -192,9 +211,14 @@ export async function runCaptureHdrStage(
   // with a transparent background) for DOM layers. That CDP call hangs
   // indefinitely when Chrome is launched with --enable-begin-frame-control
   // (the default on Linux/headless-shell), because the compositor is paused
-  // and never produces a frame to capture. Force screenshot mode for the
-  // entire layered path — same constraint as alpha output formats above.
-  cfg.forceScreenshot = true;
+  // and never produces a frame to capture. Use screenshot mode for the
+  // entire layered path — same constraint as alpha output formats. We
+  // derive a local `hdrCfg` instead of mutating the caller-owned `cfg`
+  // so the value flowing through the rest of the pipeline is the one the
+  // sequencer locked at compile time. (The HDR path is end-of-pipeline
+  // today, but Phase 3 chunked rendering depends on stages not mutating
+  // caller config.)
+  const hdrCfg: EngineConfig = { ...cfg, forceScreenshot: true };
 
   // Use NATIVE HDR IDs (probed before SDR→HDR conversion) so only originally-HDR
   // videos are hidden + extracted natively. SDR videos stay in the DOM screenshot
@@ -236,7 +260,7 @@ export async function runCaptureHdrStage(
     framesDir,
     buildCaptureOptions(),
     createRenderVideoFrameInjector(),
-    cfg,
+    hdrCfg,
   );
   // Track lifecycle of resources spawned during HDR rendering so the
   // outer finally block can defensively reclaim anything that wasn't

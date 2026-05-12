@@ -420,7 +420,6 @@ function createConfig(): EngineConfig {
 
 describe("applyRenderModeHints", () => {
   it("forces screenshot mode when compatibility hints recommend it", () => {
-    const cfg = createConfig();
     const compiled = createCompiledComposition(["iframe", "requestAnimationFrame"]);
     const log = {
       error: vi.fn(),
@@ -429,15 +428,13 @@ describe("applyRenderModeHints", () => {
       debug: vi.fn(),
     };
 
-    applyRenderModeHints(cfg, compiled, log);
+    const result = applyRenderModeHints(false, compiled, log);
 
-    expect(cfg.forceScreenshot).toBe(true);
+    expect(result).toEqual({ forceScreenshot: true, autoSelected: true });
     expect(log.warn).toHaveBeenCalledOnce();
   });
 
   it("does nothing when screenshot mode is already forced", () => {
-    const cfg = createConfig();
-    cfg.forceScreenshot = true;
     const compiled = createCompiledComposition(["iframe"]);
     const log = {
       error: vi.fn(),
@@ -446,8 +443,24 @@ describe("applyRenderModeHints", () => {
       debug: vi.fn(),
     };
 
-    applyRenderModeHints(cfg, compiled, log);
+    const result = applyRenderModeHints(true, compiled, log);
 
+    expect(result).toEqual({ forceScreenshot: true, autoSelected: false });
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("returns false when neither caller nor hint forces", () => {
+    const compiled = createCompiledComposition([]);
+    const log = {
+      error: vi.fn(),
+      warn: vi.fn(),
+      info: vi.fn(),
+      debug: vi.fn(),
+    };
+
+    const result = applyRenderModeHints(false, compiled, log);
+
+    expect(result).toEqual({ forceScreenshot: false, autoSelected: false });
     expect(log.warn).not.toHaveBeenCalled();
   });
 });

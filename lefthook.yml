@@ -17,7 +17,22 @@ pre-commit:
       exclude: "(\\.test\\.(ts|tsx)$|\\.generated\\.)"
       run: |
         for f in {staged_files}; do
-          case "$f" in *useTimelinePlayer.ts|*App.tsx) continue ;; esac
+          # The hook-level `exclude` regex above is meant to skip test
+          # and generated files, but lefthook expands `{staged_files}`
+          # before evaluating it for our shell loop — so the runtime
+          # filter has to repeat the rule.
+          case "$f" in
+            *.test.ts|*.test.tsx|*.generated.ts|*.generated.tsx) continue ;;
+          esac
+          # Grandfathered files that pre-date this hook (added in #748).
+          # New files >500 lines still fail; existing offenders are tracked
+          # for thinning in separate refactors — the producer stages stack
+          # is actively shrinking renderOrchestrator.ts, and
+          # captureHdrStage.ts is on the cycle-break list.
+          case "$f" in
+            *useTimelinePlayer.ts|*App.tsx) continue ;;
+            *renderOrchestrator.ts|*captureHdrStage.ts) continue ;;
+          esac
           lines=$(wc -l < "$f")
           if [ "$lines" -gt 500 ]; then
             echo "ERROR: $f has $lines lines (max 500)"

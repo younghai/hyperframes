@@ -13,7 +13,7 @@
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { CANVAS_DIMENSIONS, type CanvasResolution } from "@hyperframes/core";
-import type { AudioElement, EngineConfig, ImageElement, VideoElement } from "@hyperframes/engine";
+import type { AudioElement, ImageElement, VideoElement } from "@hyperframes/engine";
 import type { CompiledComposition } from "../htmlCompiler.js";
 import { defaultLogger, type ProducerLogger } from "../../logger.js";
 import { isPathInside } from "../../utils/paths.js";
@@ -190,18 +190,33 @@ export function writeCompiledArtifacts(
   }
 }
 
+export interface RenderModeHintResult {
+  /** Resolved capture-mode boolean after folding in the hint. */
+  forceScreenshot: boolean;
+  /** True iff the hint flipped a `false` input to `true` (warn log fired). */
+  autoSelected: boolean;
+}
+
+/**
+ * Fold the composition's `renderModeHints.recommendScreenshot` signal
+ * into the caller's already-resolved `forceScreenshot` value. Pure: the
+ * caller owns the assignment to its own config. When the hint is the
+ * deciding factor (caller passed `false`, hint says recommend), fires
+ * the auto-select warn log with the composition's reason codes.
+ */
 export function applyRenderModeHints(
-  cfg: EngineConfig,
+  alreadyForced: boolean,
   compiled: CompiledComposition,
   log: ProducerLogger = defaultLogger,
-): void {
-  if (cfg.forceScreenshot || !compiled.renderModeHints.recommendScreenshot) return;
-
-  cfg.forceScreenshot = true;
+): RenderModeHintResult {
+  if (alreadyForced || !compiled.renderModeHints.recommendScreenshot) {
+    return { forceScreenshot: alreadyForced, autoSelected: false };
+  }
   log.warn("Auto-selected screenshot capture mode for render compatibility", {
     reasonCodes: compiled.renderModeHints.reasons.map((reason) => reason.code),
     reasons: compiled.renderModeHints.reasons.map((reason) => reason.message),
   });
+  return { forceScreenshot: true, autoSelected: true };
 }
 
 /**

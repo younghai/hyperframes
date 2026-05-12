@@ -1860,10 +1860,13 @@ export async function executeRenderJob(
   const isMov = outputFormat === "mov";
   const isPngSequence = outputFormat === "png-sequence";
   const needsAlpha = isWebm || isMov || isPngSequence;
-  // Transparency requires screenshot mode — beginFrame doesn't support alpha channel
-  if (needsAlpha) {
-    cfg.forceScreenshot = true;
-  }
+  // `forceScreenshot` is resolved exactly once inside `compileStage` (alpha
+  // output + composition `renderModeHints` are folded together there) and
+  // returned on `compileResult.forceScreenshot`. The sequencer stores it
+  // in a local `captureForceScreenshot` below; the BeginFrame calibration
+  // fallback updates the local — not `cfg` — and capture stages receive
+  // the value as an explicit parameter. See DISTRIBUTED-RENDERING-PLAN.md
+  // §4.3 (`LockedRenderConfig.forceScreenshot`).
   const enableChunkedEncode = cfg.enableChunkedEncode;
   const chunkedEncodeSize = cfg.chunkSizeFrames;
   // Periodic memory sampler — surfaces peak RSS/heap so the benchmark harness
@@ -1958,6 +1961,13 @@ export async function executeRenderJob(
     const { deviceScaleFactor, outputWidth, outputHeight } = compileResult;
     const { width, height } = composition;
     perfStages.compileOnlyMs = compileResult.compileOnlyMs;
+    // Snapshot of `cfg.forceScreenshot` resolved by compileStage. The
+    // BeginFrame auto-worker calibration may flip this to `true` at
+    // runtime if the calibration session times out under BeginFrame
+    // (see fallback below); subsequent capture stages receive the value
+    // via the explicit `forceScreenshot` parameter rather than reading
+    // `cfg.forceScreenshot` directly.
+    let captureForceScreenshot = compileResult.forceScreenshot;
 
     const probeResult = await runProbeStage({
       projectDir,
@@ -2149,7 +2159,15 @@ export async function executeRenderJob(
 
     if (job.config.workers === undefined && totalFrames >= 60) {
       const calibrationDir = join(workDir, "capture-calibration");
-      const calibrationCfg = createCaptureCalibrationConfig(cfg);
+      // Build the calibration cfg from a `forceScreenshot`-applied view of
+      // `cfg` rather than reading `cfg.forceScreenshot` directly, so the
+      // capture-mode decision flows through `captureForceScreenshot`
+      // exclusively. Identity-equal to `cfg` when the values already match.
+      const calibrationBaseCfg: EngineConfig =
+        cfg.forceScreenshot === captureForceScreenshot
+          ? cfg
+          : { ...cfg, forceScreenshot: captureForceScreenshot };
+      const calibrationCfg = createCaptureCalibrationConfig(calibrationBaseCfg);
       const videoInjector = createRenderVideoFrameInjector();
       let calibrationSession: CaptureSession | null = null;
       try {
@@ -2173,9 +2191,14 @@ export async function executeRenderJob(
         logCaptureCalibrationResult(captureCalibration, log);
       } catch (error) {
         const shouldFallbackToScreenshot =
-          !cfg.forceScreenshot && shouldFallbackToScreenshotAfterCalibrationError(error);
+          !captureForceScreenshot && shouldFallbackToScreenshotAfterCalibrationError(error);
         if (shouldFallbackToScreenshot) {
-          cfg.forceScreenshot = true;
+          // Runtime adaptation: BeginFrame failed under this host's Chrome
+          // build, so the rest of the pipeline switches to screenshot
+          // capture. We flip the local boolean only — `cfg` stays the
+          // compile-time view; downstream stages receive the new value
+          // via the explicit `forceScreenshot` parameter.
+          captureForceScreenshot = true;
           if (probeSession) {
             lastBrowserConsole = probeSession.browserConsoleBuffer;
             await closeCaptureSession(probeSession).catch(() => {});
@@ -2195,7 +2218,10 @@ export async function executeRenderJob(
             },
           );
 
-          const screenshotCalibrationCfg = createCaptureCalibrationConfig(cfg);
+          const screenshotCalibrationCfg = createCaptureCalibrationConfig({
+            ...cfg,
+            forceScreenshot: true,
+          });
           try {
             calibrationSession = await createCaptureSession(
               fileServer.url,
@@ -2336,9 +2362,15 @@ export async function executeRenderJob(
     // path for SDR compositions so the engine can apply transition math to
     // isolated scene buffers instead of recording plain DOM screenshots.
     if (useLayeredComposite) {
+      // Layered composite always runs in screenshot mode — keep
+      // `captureForceScreenshot` in sync so the perf summary and any
+      // post-HDR diagnostic that reads the boolean see the same value
+      // the stage uses internally.
+      captureForceScreenshot = true;
       const hdrRes = await runCaptureHdrStage({
         job,
         cfg,
+        forceScreenshot: captureForceScreenshot,
         log,
         projectDir,
         compiledDir,
@@ -2386,6 +2418,7 @@ export async function executeRenderJob(
           job,
           totalFrames,
           cfg,
+          forceScreenshot: captureForceScreenshot,
           log,
           workerCount,
           probeSession,
@@ -2430,6 +2463,7 @@ export async function executeRenderJob(
           job,
           totalFrames,
           cfg,
+          forceScreenshot: captureForceScreenshot,
           log,
           workerCount,
           probeSession,
