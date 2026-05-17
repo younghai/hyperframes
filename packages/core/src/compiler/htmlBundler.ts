@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "fs";
-import { join, resolve, isAbsolute, sep } from "path";
+import { join, resolve, relative, dirname, isAbsolute, sep } from "path";
 import { transformSync } from "esbuild";
 import { compileHtml, type MediaDurationProber } from "./htmlCompiler";
 import {
@@ -85,6 +85,59 @@ function safeReadFile(filePath: string): string | null {
   } catch {
     return null;
   }
+}
+
+const CSS_IMPORT_RE =
+  /@import\s+(?:url\(\s*(["']?)([^)"']+)\1\s*\)|(["'])([^"']+)\3)\s*([^;]*);\s*/g;
+
+const REBASE_URL_RE = /\burl\(\s*(["']?)([^)"']+)\1\s*\)/g;
+
+function rebaseCssUrls(css: string, cssFileDir: string, projectDir: string): string {
+  const resolvedRoot = resolve(projectDir);
+  const resolvedDir = resolve(cssFileDir);
+  if (resolvedDir === resolvedRoot) return css;
+  return css.replace(REBASE_URL_RE, (full, quote: string, urlValue: string) => {
+    if (!urlValue || !isRelativeUrl(urlValue)) return full;
+    const { basePath, suffix } = splitUrlSuffix(urlValue.trim());
+    if (!basePath) return full;
+    const absolutePath = resolve(resolvedDir, basePath);
+    const rebased = relative(resolvedRoot, absolutePath);
+    if (rebased === basePath) return full;
+    return `url(${quote || ""}${rebased}${suffix}${quote || ""})`;
+  });
+}
+
+function inlineCssFile(
+  css: string,
+  cssFileDir: string,
+  projectDir: string,
+  visited: Set<string> = new Set(),
+): string {
+  const placeholders: string[] = [];
+  const withPlaceholders = css.replace(
+    CSS_IMPORT_RE,
+    (full, _q1, urlPath, _q2, barePath, mediaQuery) => {
+      const importPath = urlPath ?? barePath;
+      if (!importPath || !isRelativeUrl(importPath)) return full;
+      const resolved = resolve(cssFileDir, importPath);
+      const normalizedBase = resolve(projectDir) + sep;
+      if (!resolved.startsWith(normalizedBase) || visited.has(resolved)) return full;
+      const content = safeReadFile(resolved);
+      if (content == null) return full;
+      visited.add(resolved);
+      const inlined = inlineCssFile(content, dirname(resolved), projectDir, visited);
+      const trimmedMedia = (mediaQuery || "").trim();
+      const block = trimmedMedia ? `@media ${trimmedMedia} {\n${inlined}\n}\n` : inlined + "\n";
+      const idx = placeholders.length;
+      placeholders.push(block);
+      return `/*__hf_import_${idx}__*/`;
+    },
+  );
+  let rebased = rebaseCssUrls(withPlaceholders, cssFileDir, projectDir);
+  for (let i = 0; i < placeholders.length; i++) {
+    rebased = rebased.replace(`/*__hf_import_${i}__*/`, placeholders[i]!);
+  }
+  return rebased;
 }
 
 function safeReadFileBuffer(filePath: string): Buffer | null {
@@ -522,9 +575,10 @@ export async function bundleToSingleHtml(
     const href = el.getAttribute("href");
     if (!href || !isRelativeUrl(href)) continue;
     const cssPath = safePath(projectDir, href);
-    const css = cssPath ? safeReadFile(cssPath) : null;
+    if (!cssPath) continue;
+    const css = safeReadFile(cssPath);
     if (css == null) continue;
-    localCssChunks.push(css);
+    localCssChunks.push(inlineCssFile(css, dirname(cssPath), projectDir));
     if (!cssAnchorPlaced) {
       const anchor = document.createElement("style");
       anchor.setAttribute("data-hf-bundled-local-css", "1");
